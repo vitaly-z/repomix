@@ -1,4 +1,6 @@
 export const queryTypescript = `
+(comment) @comment
+
 (function_signature
   name: (identifier) @name.definition.function) @definition.function
 
