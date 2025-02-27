@@ -50,17 +50,11 @@ export const parseFile = async (fileContent: string, filePath: string, config: R
   try {
     // ファイル内容をASTに解析
     const tree = parser.parse(fileContent);
-
-    // クエリをASTに適用してキャプチャを取得
     const captures = query.captures(tree.rootNode);
-
-    // キャプチャを開始位置でソート
     captures.sort((a, b) => a.node.startPosition.row - b.node.startPosition.row);
 
     for (const capture of captures) {
       const { node, name } = capture;
-
-      // 開始行と終了行を取得
       const startRow = node.startPosition.row;
       const endRow = node.endPosition.row;
 
@@ -81,59 +75,104 @@ export const parseFile = async (fileContent: string, filePath: string, config: R
         name.includes('definition.method');
       const isPropertyCapture = name.includes('definition.property');
 
-      // 完全キャプチャ（コメント、型定義、インポート、プロパティ）
       const isFullCapture = 
         isCommentCapture ||
         isTypeDefinitionCapture ||
         isImportCapture ||
         isPropertyCapture;
 
-      // シグネチャのみキャプチャ（関数・メソッド）
       if (isFullCapture || isFunctionCapture) {
         let selectedLines;
 
         if (isFunctionCapture) {
-          // 関数・メソッドの場合は、シグネチャ部分のみ抽出
-          // シグネチャの終了位置を探す
-          let signatureEnd = startRow;
+          // 関数・メソッドのシグネチャを取得
+          let signatureEndRow = startRow;
+          
+          // 引数定義の終了位置を探す
           for (let i = startRow; i <= endRow; i++) {
             const line = lines[i].trim();
-            
-            // シグネチャの終了を検出（言語に依存しない形で）
-            if (line.endsWith(':') || // Python
+            if (line.includes(')') && (
+                line.endsWith('{') || // C-like languages
                 line.endsWith('=>') || // Arrow function
                 line.endsWith('->') || // Rust, PHP
-                /[{;]/.test(line)) { // C-like languages
-              signatureEnd = i;
+                line.endsWith(':') || // Python
+                line.endsWith(';') // TypeScript interface method
+            )) {
+              signatureEndRow = i;
               break;
             }
           }
 
-          // シグネチャ部分を取得（関数名から実装開始までの行）
-          selectedLines = lines.slice(startRow, signatureEnd + 1);
-          
-          // シグネチャ末尾の処理
+          selectedLines = lines.slice(startRow, signatureEndRow + 1);
+
+          // シグネチャの末尾をトリム
           const lastLine = selectedLines[selectedLines.length - 1];
           if (lastLine) {
-            if (lastLine.includes('{')) {
-              const modifiedLine = lastLine.replace(/\{.*/, '{ ... }');
-              selectedLines[selectedLines.length - 1] = modifiedLine;
-            } else if (lastLine.includes('=>')) {
-              const modifiedLine = lastLine.replace(/=>.*/, '=> { ... }');
-              selectedLines[selectedLines.length - 1] = modifiedLine;
+            selectedLines[selectedLines.length - 1] = lastLine.replace(/[{:].*$/, '');
+          }
+
+          // 重複を削除
+          const signature = selectedLines.join('\n').trim();
+          if (processedChunks.has(signature)) {
+            continue;
+          }
+          processedChunks.add(signature);
+
+        } else if (isTypeDefinitionCapture && name.includes('definition.class')) {
+          // クラス定義の場合は、extends/implements句を含む行まで取得
+          let classEndRow = startRow;
+          
+          for (let i = startRow; i <= endRow; i++) {
+            const line = lines[i].trim();
+            const hasClassDefinitionEnd = 
+              line.includes('{') || // C-like languages
+              line.endsWith(':'); // Python
+            
+            // extends/implementsを含む行までを取得
+            if (line.includes('extends') || line.includes('implements')) {
+              classEndRow = i;
+            }
+            
+            // クラス定義の終了を検出したら終了
+            if (hasClassDefinitionEnd) {
+              if (i === startRow) {
+                // 同じ行に { がある場合は、その行を含める
+                classEndRow = i;
+              }
+              break;
             }
           }
-        } else {
-          // コメント、型定義、インポート、プロパティは全体を取得
+
+          selectedLines = lines.slice(startRow, classEndRow + 1);
+          
+          // 最後の行から { 以降を削除
+          const lastLine = selectedLines[selectedLines.length - 1];
+          if (lastLine) {
+            selectedLines[selectedLines.length - 1] = lastLine.replace(/\{.*$/, '').trim();
+          }
+
+          const definition = selectedLines.join('\n').trim();
+          if (processedChunks.has(definition)) {
+            continue;
+          }
+          processedChunks.add(definition);
+
+        } else if (isTypeDefinitionCapture || isImportCapture) {
+          // インターフェース、型定義、インポート文は全体を取得
+          selectedLines = lines.slice(startRow, endRow + 1);
+          const definition = selectedLines.join('\n').trim();
+          if (processedChunks.has(definition)) {
+            continue;
+          }
+          processedChunks.add(definition);
+
+        } else if (isCommentCapture) {
+          // コメントは全体を取得
           selectedLines = lines.slice(startRow, endRow + 1);
         }
 
-        if (selectedLines.length > 0) {
-          const chunk = selectedLines.join('\n').trim();
-          if (!processedChunks.has(chunk)) {
-            processedChunks.add(chunk);
-            chunks.push(chunk);
-          }
+        if (selectedLines && selectedLines.length > 0) {
+          chunks.push(selectedLines.join('\n').trim());
         }
       }
     }
