@@ -32,30 +32,82 @@ describe('parseFile', () => {
     expect(result).toContain('sayHello');
   });
 
-  test('should parse TypeScript arrow functions correctly', async () => {
+  test('should parse TypeScript definitions correctly', async () => {
     const fileContent = `
-        const add = (x: number, y: number): number => {
-            return x + y;
-        };
-        let multiply: (a: number, b:number) => number;
-        multiply = (a, b) => {
-            return a*b;
+      interface UserInterface {
+        name: string;
+        age: number;
+        greet(): void;
+      }
+
+      type UserType = {
+        id: number;
+        email: string;
+      };
+
+      class UserService extends BaseService implements UserInterface {
+        constructor(private deps: Dependencies) {
+          super();
         }
-        let obj = { a: 1, b: () => 2 }
+
+        async getUser(
+          id: number,
+          options: {
+            include: string[];
+            cache: boolean;
+          }
+        ) {
+          return null;
+        }
+      }
+
+      const createUser = (
+        data: {
+          name: string;
+          age: number;
+        },
+        config?: {
+          validate: boolean;
+        }
+      ) => {
+        return data;
+      };
     `;
     const filePath = 'dummy.ts';
-    const config = { output: { compress: true } }; // compress を true に設定
+    const config = {};
     const result = await parseFile(fileContent, filePath, config as RepomixConfigMerged);
 
-    console.log(result);
+    // インターフェースは完全な定義を含む
+    expect(result).toContain('interface UserInterface');
+    expect(result).toContain('name: string');
+    expect(result).toContain('age: number');
+    expect(result).toContain('greet(): void');
 
-    expect(typeof result).toBe('string');
-    expect(result).toContain('add');
-    expect(result).toContain('multiply');
-    expect(result).toContain('b'); //obj b property
-    expect(result).not.toContain('x + y'); // not contain function body
-    expect(result).not.toContain('a*b'); // not contain function body
-    expect(result).not.toContain('obj'); // not contain object body
+    // 型定義も完全な定義を含む
+    expect(result).toContain('type UserType');
+    expect(result).toContain('id: number');
+    expect(result).toContain('email: string');
+
+    // クラス定義は extends/implements までを含む
+    expect(result).toContain('class UserService extends BaseService implements UserInterface');
+    expect(result).not.toContain('constructor');
+    expect(result).not.toContain('private deps');
+
+    // 関数定義は引数定義までを含む
+    expect(result).toContain('async getUser(');
+    expect(result).toContain('id: number');
+    expect(result).toContain('options: {');
+    expect(result).toContain('include: string[]');
+    expect(result).toContain('cache: boolean');
+    expect(result).not.toContain('return null');
+
+    // アロー関数も同様
+    expect(result).toContain('const createUser = (');
+    expect(result).toContain('data: {');
+    expect(result).toContain('name: string');
+    expect(result).toContain('config?: {');
+    expect(result).toContain('validate: boolean');
+    expect(result).not.toContain('return data');
   });
 
   test('should parse TSX correctly', async () => {
