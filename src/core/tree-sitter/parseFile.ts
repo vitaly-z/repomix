@@ -22,11 +22,11 @@ function normalizeChunk(chunk: string): string {
 }
 
 /**
- * RepoMapを参考にした改良版parseFile関数
- * - 定義（クラス、関数、変数など）全体を取得
- * - コメントを含める
- * - import文を含める
- * - 型定義全体を含める
+ * 定義とコメントを完全に取得するための改良版parseFile関数
+ * - コメントを完全に含む
+ * - 型定義（interface, type, enum）を完全に含む
+ * - import文を含む
+ * - 関数・メソッドのシグネチャを改行を含めて完全に取得
  */
 export const parseFile = async (fileContent: string, filePath: string, config: RepomixConfigMerged) => {
   const languageParser = await getLanguageParserSingleton();
@@ -39,7 +39,6 @@ export const parseFile = async (fileContent: string, filePath: string, config: R
 
   const lang: SupportedLang | undefined = languageParser.guessTheLang(filePath);
   if (lang === undefined) {
-    // 言語がサポートされていない
     return undefined;
   }
 
@@ -58,7 +57,6 @@ export const parseFile = async (fileContent: string, filePath: string, config: R
     // キャプチャを開始位置でソート
     captures.sort((a, b) => a.node.startPosition.row - b.node.startPosition.row);
 
-    // インターフェースと関数定義を区別して処理
     for (const capture of captures) {
       const { node, name } = capture;
 
@@ -70,88 +68,72 @@ export const parseFile = async (fileContent: string, filePath: string, config: R
         continue;
       }
 
-      // インターフェース、型定義、インポート、コメントは完全にキャプチャ
-      const isFullCapture =
+      // キャプチャの種類を判定
+      const isCommentCapture = name.includes('definition.comment');
+      const isTypeDefinitionCapture = 
         name.includes('definition.interface') ||
         name.includes('definition.type') ||
-        name.includes('definition.import') ||
-        name.includes('definition.comment') ||
         name.includes('definition.enum') ||
-        name.includes('definition.property');
+        name.includes('definition.class');
+      const isImportCapture = name.includes('definition.import');
+      const isFunctionCapture = 
+        name.includes('definition.function') ||
+        name.includes('definition.method');
+      const isPropertyCapture = name.includes('definition.property');
 
-      // 関数定義とメソッドはシグネチャのみをキャプチャ（実装は含まない）
-      const isSignatureCapture =
-        name.includes('definition.function.signature') ||
-        name.includes('definition.method.signature');
+      // 完全キャプチャ（コメント、型定義、インポート、プロパティ）
+      const isFullCapture = 
+        isCommentCapture ||
+        isTypeDefinitionCapture ||
+        isImportCapture ||
+        isPropertyCapture;
 
-      // クラス宣言はクラス名とプロパティのみをキャプチャ
-      const isClassCapture = name.includes('definition.class');
-
-      // 定義に関連するキャプチャのみを処理
-      if ((isFullCapture || isSignatureCapture || isClassCapture || name.includes('name.definition')) && lines[startRow]) {
+      // シグネチャのみキャプチャ（関数・メソッド）
+      if (isFullCapture || isFunctionCapture) {
         let selectedLines;
 
-        if (isSignatureCapture) {
-          // 関数やメソッドのシグネチャのみをキャプチャ（実装部分は含まない）
-          // ボディの開始位置（最初の{ まで）を探す
-          let bodyStart = -1;
+        if (isFunctionCapture) {
+          // 関数・メソッドの場合は、シグネチャ部分のみ抽出
+          // シグネチャの終了位置を探す
+          let signatureEnd = startRow;
           for (let i = startRow; i <= endRow; i++) {
-            if (lines[i].includes('{')) {
-              bodyStart = i;
+            const line = lines[i].trim();
+            
+            // シグネチャの終了を検出（言語に依存しない形で）
+            if (line.endsWith(':') || // Python
+                line.endsWith('=>') || // Arrow function
+                line.endsWith('->') || // Rust, PHP
+                /[{;]/.test(line)) { // C-like languages
+              signatureEnd = i;
               break;
             }
           }
 
-          if (bodyStart !== -1) {
-            // シグネチャ部分のみを含める（ボディの開始位置まで）
-            selectedLines = lines.slice(startRow, bodyStart + 1);
-            // 実装部分を除去（最初の { で閉じる）
-            const lastLine = selectedLines[selectedLines.length - 1];
-            const braceIndex = lastLine.indexOf('{');
-            if (braceIndex !== -1) {
-              selectedLines[selectedLines.length - 1] = lastLine.substring(0, braceIndex + 1) + ' ... }';
+          // シグネチャ部分を取得（関数名から実装開始までの行）
+          selectedLines = lines.slice(startRow, signatureEnd + 1);
+          
+          // シグネチャ末尾の処理
+          const lastLine = selectedLines[selectedLines.length - 1];
+          if (lastLine) {
+            if (lastLine.includes('{')) {
+              const modifiedLine = lastLine.replace(/\{.*/, '{ ... }');
+              selectedLines[selectedLines.length - 1] = modifiedLine;
+            } else if (lastLine.includes('=>')) {
+              const modifiedLine = lastLine.replace(/=>.*/, '=> { ... }');
+              selectedLines[selectedLines.length - 1] = modifiedLine;
             }
-          } else {
-            // ボディがない場合（アロー関数などのシンプルな場合）
-            selectedLines = lines.slice(startRow, endRow + 1);
-          }
-        } else if (isFullCapture) {
-          // インターフェースや型定義は完全にキャプチャ
-          selectedLines = lines.slice(startRow, endRow + 1);
-        } else if (isClassCapture) {
-          // クラス宣言はクラス名とプロパティのみをキャプチャ（メソッド実装は含まない）
-          // クラス宣言の開始部分のみを抽出
-          let classBodyStart = -1;
-          for (let i = startRow; i <= endRow; i++) {
-            if (lines[i].includes('{')) {
-              classBodyStart = i;
-              break;
-            }
-          }
-
-          if (classBodyStart !== -1) {
-            // クラスシグネチャとプロパティ部分のみを含める
-            selectedLines = lines.slice(startRow, classBodyStart + 1);
-            // 最後に閉じ括弧を追加
-            selectedLines.push('  ... }');
-          } else {
-            selectedLines = lines.slice(startRow, endRow + 1);
           }
         } else {
-          // その他の定義関連要素は全体をキャプチャ
+          // コメント、型定義、インポート、プロパティは全体を取得
           selectedLines = lines.slice(startRow, endRow + 1);
         }
 
-        if (selectedLines.length < 1) {
-          continue;
-        }
-
-        const chunk = selectedLines.join('\n');
-        const normalizedChunk = normalizeChunk(chunk);
-
-        if (!processedChunks.has(normalizedChunk)) {
-          processedChunks.add(normalizedChunk);
-          chunks.push(chunk);
+        if (selectedLines.length > 0) {
+          const chunk = selectedLines.join('\n').trim();
+          if (!processedChunks.has(chunk)) {
+            processedChunks.add(chunk);
+            chunks.push(chunk);
+          }
         }
       }
     }
@@ -159,5 +141,5 @@ export const parseFile = async (fileContent: string, filePath: string, config: R
     logger.log(`Error parsing file: ${error}\n`);
   }
 
-  return chunks.join('\n');
+  return chunks.join('\n\n');
 };
